@@ -1,4 +1,4 @@
-use crate::mm::alloc_page;
+use crate::mm::Freelist;
 
 pub struct Thread {
     registers: [usize;16],
@@ -17,7 +17,7 @@ static mut THREADS: Option<*mut Thread> = None;
 
 impl Thread {
     pub fn new(stack: usize, pagemap: usize) {
-        let page = alloc_page();
+        let page = Freelist::alloc();
         if let Some(ptr) = page {
             let thread: &mut Thread = unsafe{&mut *ptr.cast()};
             thread.registers = [0,0,0,0,0,0,stack,0,0,0,0,0,0,0,0,0];

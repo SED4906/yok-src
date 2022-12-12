@@ -30,6 +30,8 @@ pub extern "C" fn _start() -> ! {
     thread::Thread::new(0, 0);
     unsafe{thread::task_switch()};
     println!("threads ok");
+    interrupts::setup_interrupts();
+    println!("interrupts ok");
     hcf();
 }
 

@@ -2,29 +2,31 @@ use limine::{LimineHhdmRequest, LimineMemmapRequest, LimineMemoryMapEntryType};
 
 static MEMMAP: LimineMemmapRequest = LimineMemmapRequest::new(0);
 
-struct Freelist (Option<*mut Freelist>);
+pub struct Freelist (Option<*mut Freelist>);
 
 unsafe impl Send for Freelist {}
 unsafe impl Sync for Freelist {}
 
 static mut FREELIST: Freelist = Freelist(None);
 
-pub fn alloc_page() -> Option<*mut u8> {
-    let page = unsafe {FREELIST.0};
-    match page {
-        Some(ptr) => {
-            unsafe {FREELIST.0 = (*ptr).0};
-            Some(ptr.cast())
+impl Freelist {
+    pub fn alloc() -> Option<*mut u8> {
+        let page = unsafe {FREELIST.0};
+        match page {
+            Some(ptr) => {
+                unsafe {FREELIST.0 = (*ptr).0};
+                Some(ptr.cast())
+            }
+            None => None
         }
-        None => None
     }
-}
 
-pub fn dealloc_page(ptr: *mut u8) {
-    let page: *mut Freelist = ptr.cast();
-    unsafe { 
-        (*page).0 = FREELIST.0;
-        FREELIST.0 = Some(page);
+    pub fn dealloc(ptr: *mut u8) {
+        let page: *mut Freelist = ptr.cast();
+        unsafe { 
+            (*page).0 = FREELIST.0;
+            FREELIST.0 = Some(page);
+        }
     }
 }
 
@@ -37,7 +39,7 @@ pub fn build_freelist() {
         let end = base + ent.len;
         let mut page = base;
         while page < end {
-            dealloc_page(page as *mut u8);
+            Freelist::dealloc(page as *mut u8);
             page += 4096;
         }
     }
