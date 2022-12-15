@@ -37,6 +37,8 @@ impl Thread {
 }
 
 #[no_mangle]
+// We specify the sysv64 ABI here because when task_switch calls this function
+// it expects the return value to be split between rax & rdx.
 pub extern "sysv64" fn context_switch(stack: usize, pagemap: usize) -> Context {
     unsafe {
         if let Some(threads) = THREADS {

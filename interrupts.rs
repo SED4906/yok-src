@@ -1,4 +1,4 @@
-use crate::mm::Freelist;
+use crate::{mm::Freelist, println};
 
 #[repr(C)]
 pub struct InterruptGate {
@@ -52,6 +52,16 @@ extern "C" fn interrupt_stub_no_err_handler() {
     panic!("recieved unhandled interrupt");
 }
 
+#[no_mangle]
+extern "C" fn interrupt_stub_picm_handler() {
+    println!("recieved unhandled master irq");
+}
+
+#[no_mangle]
+extern "C" fn interrupt_stub_pics_handler() {
+    println!("recieved unhandled slave irq");
+}
+
 extern {
     fn interrupt_stub_no_err();
     fn interrupt_stub_err();
@@ -61,6 +71,7 @@ extern {
 pub fn setup_interrupts() {
     unsafe{
         IDT = Some(Freelist::alloc().expect("no memory for interrupt table").cast());
+        // This sets the first entries in the IDT. Some entries are written twice here.
         if let Some(idt) = IDT {
             for entry in 0..=9 {
                 (*idt)[entry] = InterruptGate::new(interrupt_stub_no_err as usize, 0x28, 0, 0x8E);

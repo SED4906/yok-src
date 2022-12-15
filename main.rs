@@ -27,8 +27,8 @@ pub extern "C" fn _start() -> ! {
     }
 
     mm::build_freelist();
-    thread::Thread::new(0, 0);
-    unsafe{thread::task_switch()};
+    thread::Thread::new(0, 0); // Our rsp and cr3 should not be 0, so
+    unsafe{thread::task_switch()}; // we switch tasks to set the right values there.
     println!("threads ok");
     interrupts::setup_interrupts();
     println!("interrupts ok");
