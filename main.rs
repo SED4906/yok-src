@@ -3,6 +3,7 @@
 
 mod interrupts;
 mod io;
+mod keyb;
 mod mm;
 mod thread;
 use limine::LimineBootInfoRequest;
