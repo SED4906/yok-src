@@ -3,6 +3,7 @@ use crate::mm::Freelist;
 pub struct Thread {
     registers: [usize;16],
     pagemap: usize,
+    active: bool,
     next: *mut Thread,
     prev: *mut Thread
 }
@@ -15,6 +16,17 @@ pub struct Context {
 
 static mut THREADS: Option<*mut Thread> = None;
 
+fn get_current_thread() -> &'static mut Thread {
+    let threads = unsafe {THREADS};
+    if let Some(threads) = threads {
+        unsafe {
+            &mut*threads
+        }
+    } else {
+        panic!("There is no current thread.")
+    }
+}
+
 impl Thread {
     pub fn new(stack: usize, pagemap: usize) {
         let page = Freelist::alloc();
@@ -22,6 +34,7 @@ impl Thread {
             let thread: &mut Thread = unsafe{&mut *ptr.cast()};
             thread.registers = [0,0,0,0,0,0,stack,0,0,0,0,0,0,0,0,0];
             thread.pagemap = pagemap;
+            thread.active = true;
             if let Some(threads) = unsafe{THREADS} {
                 thread.next = unsafe{(*threads).next};
                 thread.prev = threads;
@@ -34,43 +47,43 @@ impl Thread {
             panic!("Couldn't allocate memory for thread!");
         }
     }
+
+    pub fn exit() {
+        let mut thread = get_current_thread();
+        thread.active = false;
+        unsafe{task_switch()};
+    }
+
+    fn get_next(&self) -> &mut Thread {
+        unsafe{&mut* self.next}
+    }
 }
 
 #[no_mangle]
 // We specify the sysv64 ABI here because when task_switch calls this function
 // it expects the return value to be split between rax & rdx.
 pub extern "sysv64" fn context_switch(stack: usize, pagemap: usize) -> Context {
-    unsafe {
-        if let Some(threads) = THREADS {
-            (*threads).registers[6] = stack;
-            (*threads).pagemap = pagemap;
-            THREADS = Some((*threads).next);
-            Context{stack:(*(*threads).next).registers[6], pagemap:(*(*threads).next).pagemap}
-        } else {
-            Context{stack:0,pagemap:0}
-        }
+    let mut thread = get_current_thread();
+    thread.registers[6] = stack;
+    thread.pagemap = pagemap;
+    loop {
+        thread = thread.get_next();
+        if thread.active {break;}
     }
+    unsafe {THREADS = Some(thread)}
+    Context{stack:thread.get_next().registers[6], pagemap:thread.get_next().pagemap}
 }
 
 #[no_mangle]
 pub extern "C" fn load_register(which: usize) -> usize {
-    return unsafe {  
-        if let Some(threads) = THREADS {
-            (*threads).registers[which]
-        } else {
-            panic!("no thread to load register {} state from", which)
-        }
-    };
+    get_current_thread().registers[which]
 }
 
 #[no_mangle]
 pub extern "C" fn save_register(which: usize, what: usize) {
-    unsafe {  
-        if let Some(threads) = THREADS {
-            (*threads).registers[which] = what;
-        } else {
-            panic!("no thread to save register {} state ({}) to", which, what);
-        }
+    let thread = get_current_thread();
+    if thread.active {
+        thread.registers[which] = what;
     }
 }
 
