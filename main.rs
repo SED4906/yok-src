@@ -2,6 +2,7 @@
 #![no_std]
 #![no_main]
 
+mod gdt;
 mod interrupts;
 mod io;
 mod mm;
@@ -29,11 +30,14 @@ pub extern "C" fn _start() -> ! {
     }
 
     mm::build_freelist();
-    thread::Thread::new(0, 0); // Our rsp and cr3 should not be 0, so
-    unsafe{thread::task_switch()}; // we switch tasks to set the right values there.
-    println!("threads ok");
+    println!("memory ok");
+    unsafe{gdt::init()};
+    println!("gdt ok");
     interrupts::setup_interrupts();
     println!("interrupts ok");
+    thread::Thread::new(0, 0, false); // Our rsp and cr3 should not be 0, so
+    unsafe{thread::task_switch();} // we switch tasks to set the right values there.
+    println!("threads ok");
     hcf();
 }
 

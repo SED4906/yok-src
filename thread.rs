@@ -4,6 +4,7 @@ pub struct Thread {
     registers: [usize;16],
     pagemap: usize,
     active: bool,
+    user: bool,
     next: *mut Thread,
     prev: *mut Thread
 }
@@ -28,7 +29,7 @@ fn get_current_thread() -> &'static mut Thread {
 }
 
 impl Thread {
-    pub fn new(stack: usize, pagemap: usize) {
+    pub fn new(stack: usize, pagemap: usize, make_user: bool) {
         let page = Freelist::alloc();
         if let Some(ptr) = page {
             let thread: &mut Thread = unsafe{&mut *ptr.cast()};
@@ -36,9 +37,11 @@ impl Thread {
             thread.pagemap = pagemap;
             thread.active = true;
             if let Some(threads) = unsafe{THREADS} {
+                thread.user = make_user | unsafe{(*threads).user};
                 thread.next = unsafe{(*threads).next};
                 thread.prev = threads;
             } else {
+                thread.user = make_user;
                 thread.next = ptr.cast();
                 thread.prev = ptr.cast();
                 unsafe {THREADS = Some(thread)};
@@ -87,4 +90,9 @@ pub extern "C" fn save_register(which: usize, what: usize) {
     }
 }
 
-extern {pub fn task_switch();}
+#[no_mangle]
+pub extern "sysv64" fn is_usermode_thread() -> bool {
+    get_current_thread().user
+}
+
+extern "C" {pub fn task_switch();}
