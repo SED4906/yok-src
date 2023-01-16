@@ -1,5 +1,5 @@
 use crate::mm::Freelist;
-
+use crate::{println,print};
 #[repr(C)]
 pub struct InterruptGate {
     offset_1: u16,
@@ -52,13 +52,36 @@ extern "C" fn interrupt_stub_no_err_handler() {
     panic!("recieved unhandled interrupt");
 }
 
+#[no_mangle]
+extern "C" fn interrupt_stub_picm_handler() {
+    println!("recieved unhandled master irq");
+}
+
+#[no_mangle]
+extern "C" fn interrupt_stub_pics_handler() {
+    println!("recieved unhandled slave irq");
+}
+
+#[no_mangle]
+extern "C" fn interrupt_keyb_handler(c: u8) {
+    let glyph = crate::keyb::scandecode(c);
+    if glyph != 0 {
+        print!("{}",glyph as char);
+    }
+}
+
 extern {
     fn interrupt_stub_no_err();
     fn interrupt_stub_err();
+    fn interrupt_stub_picm();
+    fn interrupt_stub_pics();
+    fn interrupt_keyb();
+    fn pic_remap();
+    fn pic_unmask_devices();
     fn enable_interrupts(idtr: *mut InterruptTablePtr);
 }
 
-pub fn setup_interrupts() {
+pub fn init() {
     unsafe{
         IDT = Some(Freelist::alloc().expect("no memory for interrupt table").cast());
         // This sets the first entries in the IDT. Some entries are written twice here.
@@ -77,8 +100,17 @@ pub fn setup_interrupts() {
             (*idt)[21] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
             (*idt)[29] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
             (*idt)[30] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
+            for entry in 32..=39 {
+                (*idt)[entry] = InterruptGate::new(interrupt_stub_picm as usize, 0x28, 0, 0x8E);
+            }
+            (*idt)[33] = InterruptGate::new(interrupt_keyb as usize, 0x28, 0, 0x8E);
+            for entry in 40..=47 {
+                (*idt)[entry] = InterruptGate::new(interrupt_stub_pics as usize, 0x28, 0, 0x8E);
+            }
         }
-        IDTR = InterruptTablePtr::new(31, IDT.unwrap());
+        pic_remap();
+        pic_unmask_devices();
+        IDTR = InterruptTablePtr::new(48, IDT.unwrap());
         enable_interrupts(&mut IDTR);
     };
 }

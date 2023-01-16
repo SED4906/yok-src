@@ -39,7 +39,7 @@ impl Freelist {
     }
 }
 
-pub fn build_freelist() {
+pub fn init() {
     let memmap = MEMMAP.get_response().get().expect("no memmap").memmap();
     let hhdm = HHDM.get_response().get().expect("no hhdm").offset;
     unsafe{HHDM_VAL = Some(hhdm)};
@@ -115,8 +115,4 @@ impl Pagemap {
         pml1_hhdm[(vaddr >> 12) & 0x1FF] = paddr | flags;
         return true;
     }
-}
-
-extern {
-    pub fn get_pagemap() -> Pagemap;
 }
