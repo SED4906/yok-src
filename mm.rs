@@ -1,118 +1,170 @@
-use limine::{LimineHhdmRequest, LimineMemmapRequest, LimineMemoryMapEntryType};
+use core::ptr::NonNull;
+use limine::LimineMemmapRequest;
 
-static MEMMAP: LimineMemmapRequest = LimineMemmapRequest::new(0);
-static HHDM: LimineHhdmRequest = LimineHhdmRequest::new(0);
+static MEMORY_MAP: LimineMemmapRequest = LimineMemmapRequest::new(0);
+pub trait PageMap {
+    fn get_page(&self, addr: usize) -> Result<PageMapEntry, PageError>;
+    fn set_page(&self, addr: usize, page: Option<PageMapEntry>, allocate: bool) -> Result<(), PageError>;
+    unsafe fn switch_to(&self);
+}
 
-pub struct Freelist (Option<*mut Freelist>);
+pub trait PageFrame {
+    fn addr(&self) -> usize;
+    fn present(&self) -> bool;
+    fn user_mode(&self) -> bool;
+    fn writable(&self) -> bool;
+    fn executable(&self) -> bool;
+    fn set_addr(&mut self, value: usize);
+    fn set_present(&mut self, value: bool);
+    fn set_user_mode(&mut self, value: bool);
+    fn set_writable(&mut self, value: bool);
+    fn set_executable(&mut self, value: bool);
+}
 
-#[repr(C)]
-pub struct Pagemap (pub *mut [usize;512]);
+pub enum PageError {
+    OutOfMemory,
+    AllocationFailed,
+    InvalidFrame,
+    NotPresent,
+}
 
-unsafe impl Send for Freelist {}
-unsafe impl Sync for Freelist {}
+impl core::fmt::Debug for PageError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(f, "{}", match self {
+            Self::OutOfMemory => "out of memory",
+            Self::AllocationFailed => "allocation failed",
+            Self::InvalidFrame => "invalid frame",
+            Self::NotPresent => "address not mapped",
+        })
+    }
+}
 
-static mut FREELIST: Freelist = Freelist(None);
-static mut HHDM_VAL: Option<u64> = None;
+#[derive(Clone,Copy,Default)]
+pub struct PageMapEntry(usize);
+
+#[derive(Clone,Copy)]
+pub struct Freelist(Option<NonNull<Freelist>>);
+
+pub static mut FREELIST: Freelist = Freelist(None);
 
 impl Freelist {
-    pub fn alloc() -> Option<*mut u8> {
-        let page = unsafe {FREELIST.0};
-        let hhdm = unsafe{HHDM_VAL.expect("no hhdm on alloc?")};
-        match page {
-            Some(ptr) => {
-                let ptr_hhdm: *mut Freelist = unsafe{ptr.byte_offset(hhdm as isize).cast()};
-                unsafe {FREELIST.0 = (*ptr_hhdm).0};
-                Some(ptr.cast())
-            }
-            None => None
+    pub unsafe fn insert(addr: usize) {
+        if let Some(page)= NonNull::new(addr as *mut Freelist) {
+            *page.as_ptr() = FREELIST;
+            unsafe{FREELIST.0 = Some(page)};
         }
     }
+    pub unsafe fn alloc() -> Result<usize,PageError> {
+        if let Some(page) = FREELIST.0 {
+            FREELIST = *page.as_ptr();
+            return Ok(page.addr().get());
+        }
+        Err(PageError::OutOfMemory)
+    }
+}
 
-    pub fn dealloc(ptr: *mut u8) {
-        let page: *mut Freelist = ptr.cast();
-        let hhdm = unsafe{HHDM_VAL.expect("no hhdm on dealloc?")};
-        let page_hhdm: *mut Freelist = unsafe{ptr.byte_offset(hhdm as isize).cast()};
-        unsafe { 
-            (*page_hhdm).0 = FREELIST.0;
-            FREELIST.0 = Some(page);
+pub struct PageTable (*mut [PageMapEntry;512]);
+
+impl PageFrame for PageMapEntry {
+    fn addr(&self) -> usize {
+        self.0 & !0x1FF
+    }
+    fn present(&self) -> bool {
+        self.0 & 1 == 1
+    }
+    fn writable(&self) -> bool {
+        self.0 & 2 == 1
+    }
+    fn user_mode(&self) -> bool {
+        self.0 & 4 == 1
+    }
+    fn executable(&self) -> bool {
+        self.0 & (1<<63) == 0
+    }
+    fn set_addr(&mut self, value: usize) {
+        self.0 = (self.0 & 0x1FF) | (value & !0x1FF);
+    }
+    fn set_present(&mut self, value: bool) {
+        self.0 = (self.0 & !1) | (value as usize);
+    }
+    fn set_writable(&mut self, value: bool) {
+        self.0 = (self.0 & !2) | ((value as usize) << 1);
+    }
+    fn set_user_mode(&mut self, value: bool) {
+        self.0 = (self.0 & !4) | ((value as usize) << 2);
+    }
+    fn set_executable(&mut self, value: bool) {
+        self.0 = (self.0 & !(1<<63)) | ((!value as usize) << 2);
+    }
+}
+
+impl PageTable {
+    fn descend(&self, addr: usize, allocate: bool, level: usize) -> Result<PageTable, PageError> {
+        let entries = match unsafe{self.0.as_mut()} {
+            Some(x) => x,
+            None => return Err(PageError::InvalidFrame)
+        };
+        match entries.get_mut((addr >> (12 + 9*level)) & 0x1FF) {
+            Some(entry) if entry.0 & 1 == 1 => Ok(PageTable((entry.0 & !0xFFF) as *mut [PageMapEntry;512])),
+            Some(entry) if allocate => {
+                *entry=unsafe{PageMapEntry(Freelist::alloc()?)};
+                Ok(PageTable((*entry).0 as *mut [PageMapEntry;512]))
+            },
+            Some(_) => Err(PageError::NotPresent),
+            None => Err(PageError::InvalidFrame)
         }
     }
+    fn grab(&self, addr: usize, level: usize) -> Result<PageMapEntry, PageError> {
+        let entries = match unsafe{self.0.as_ref()} {
+            Some(x) => x,
+            None => return Err(PageError::InvalidFrame)
+        };
+        match entries.get((addr >> (12 + 9*level)) & 0x1FF) {
+            Some(entry) => Ok(*entry),
+            None => Err(PageError::InvalidFrame)
+        }
+    }
+    fn poke(&self, addr: usize, page: Option<PageMapEntry>, level: usize) -> Result<(), PageError>{
+        let entries = match unsafe{self.0.as_mut()} {
+            Some(x) => x,
+            None => return Err(PageError::InvalidFrame)
+        };
+        match entries.get_mut((addr >> (12 + 9*level)) & 0x1FF) {
+            Some(entry) => Ok({*entry=page.unwrap_or_default();}),
+            None => Err(PageError::InvalidFrame)
+        }
+    }
+}
+
+impl PageMap for PageTable {
+    fn get_page(&self, addr: usize) -> Result<PageMapEntry, PageError> {
+        let pml3 = self.descend(addr,false,3)?;
+        let pml2 = pml3.descend(addr,false,2)?;
+        let pml1 = pml2.descend(addr,false,1)?;
+        pml1.grab(addr,0)
+    }
+    fn set_page(&self, addr: usize, page: Option<PageMapEntry>, allocate: bool) -> Result<(), PageError> {
+        let pml3 = self.descend(addr,allocate,3)?;
+        let pml2 = pml3.descend(addr,allocate,2)?;
+        let pml1 = pml2.descend(addr,allocate,1)?;
+        pml1.poke(addr,page,0)
+    }
+    unsafe fn switch_to(&self) {
+        x86::controlregs::cr3_write(self.0 as u64);
+    } 
 }
 
 pub fn init() {
-    let memmap = MEMMAP.get_response().get().expect("no memmap").memmap();
-    let hhdm = HHDM.get_response().get().expect("no hhdm").offset;
-    unsafe{HHDM_VAL = Some(hhdm)};
-    for entry in memmap {
-        let ent = unsafe {&*entry.as_ptr()};
-        if ent.typ != LimineMemoryMapEntryType::Usable {continue}
-        let base = ent.base;
-        let end = base + ent.len;
-        let mut page = base;
-        while page < end {
-            Freelist::dealloc(page as *mut u8);
-            page += 4096;
+    let memory_map = MEMORY_MAP.get_response().get().expect("no memory map").memmap();
+    for entry in memory_map.iter().map(core::ops::Deref::deref) {
+        if entry.typ != limine::LimineMemoryMapEntryType::Usable {
+            continue;
         }
-    }
-}
-
-impl Pagemap {
-    pub fn read_mapping(pagemap: &Pagemap, vaddr: usize) -> Option<usize> {
-        let hhdm = HHDM.get_response().get().expect("no hhdm").offset;
-        let pagemap_hhdm = unsafe{&*pagemap.0.byte_offset(hhdm as isize)};
-        let entry4 = pagemap_hhdm[(vaddr >> 39) & 0x1FF];
-        if entry4 & 1 == 0 { return None; }
-        let pml3 = entry4 & !0xFFF;
-        let pml3_hhdm = unsafe{&*(pml3 as *mut [usize;512]).byte_offset(hhdm as isize)};
-        let entry3 = pml3_hhdm[(vaddr >> 30) & 0x1FF];
-        if entry3 & 1 == 0 { return None; }
-        let pml2 = entry3 & !0xFFF;
-        let pml2_hhdm = unsafe{&*(pml2 as *mut [usize;512]).byte_offset(hhdm as isize)};
-        let entry2 = pml2_hhdm[(vaddr >> 21) & 0x1FF];
-        if entry2 & 1 == 0 { return None; }
-        let pml1 = entry2 & !0xFFF;
-        let pml1_hhdm = unsafe{&*(pml1 as *mut [usize;512]).byte_offset(hhdm as isize)};
-        return Some(pml1_hhdm[(vaddr >> 12) & 0x1FF]);
-    }
-
-    pub fn update_mapping(pagemap: &Pagemap, vaddr: usize, entry: usize) -> bool {
-        let hhdm = HHDM.get_response().get().expect("no hhdm").offset;
-        let pagemap_hhdm = unsafe{&*pagemap.0.byte_offset(hhdm as isize)};
-        let entry4 = pagemap_hhdm[(vaddr >> 39) & 0x1FF];
-        if entry4 & 1 == 0 { return false; }
-        let pml3 = entry4 & !0xFFF;
-        let pml3_hhdm = unsafe{&*(pml3 as *mut [usize;512]).byte_offset(hhdm as isize)};
-        let entry3 = pml3_hhdm[(vaddr >> 30) & 0x1FF];
-        if entry3 & 1 == 0 { return false; }
-        let pml2 = entry3 & !0xFFF;
-        let pml2_hhdm = unsafe{&*(pml2 as *mut [usize;512]).byte_offset(hhdm as isize)};
-        let entry2 = pml2_hhdm[(vaddr >> 21) & 0x1FF];
-        if entry2 & 1 == 0 { return false; }
-        let pml1 = entry2 & !0xFFF;
-        let pml1_hhdm = unsafe{&mut*(pml1 as *mut [usize;512]).byte_offset(hhdm as isize)};
-        pml1_hhdm[(vaddr >> 12) & 0x1FF] = entry;
-        return true;
-    }
-
-    pub fn create_mapping(pagemap: &Pagemap, vaddr: usize, paddr: usize, flags: usize) -> bool {
-        let hhdm = HHDM.get_response().get().expect("no hhdm").offset;
-        let pagemap_hhdm = unsafe{&mut*pagemap.0.byte_offset(hhdm as isize)};
-        let entry4 = Freelist::alloc().unwrap_or_else(|| panic!("out of memory creating level 4 mapping on {} from {} to {} with flags {}",pagemap.0 as usize,vaddr,paddr,flags)) as usize | flags;
-        pagemap_hhdm[(vaddr >> 39) & 0x1FF] = entry4;
-        if entry4 & 1 == 0 { return false; }
-        let pml3 = entry4 & !0xFFF;
-        let pml3_hhdm = unsafe{&mut*(pml3 as *mut [usize;512]).byte_offset(hhdm as isize)};
-        let entry3 = Freelist::alloc().unwrap_or_else(|| panic!("out of memory creating level 3 mapping on {} from {} to {} with flags {}",pagemap.0 as usize,vaddr,paddr,flags)) as usize | flags;
-        pml3_hhdm[(vaddr >> 30) & 0x1FF] = entry3;
-        if entry3 & 1 == 0 { return false; }
-        let pml2 = entry3 & !0xFFF;
-        let pml2_hhdm = unsafe{&mut*(pml2 as *mut [usize;512]).byte_offset(hhdm as isize)};
-        let entry2 = Freelist::alloc().unwrap_or_else(|| panic!("out of memory creating level 2 mapping on {} from {} to {} with flags {}",pagemap.0 as usize,vaddr,paddr,flags)) as usize | flags;
-        pml2_hhdm[(vaddr >> 21) & 0x1FF] = entry2;
-        if entry2 & 1 == 0 { return false; }
-        let pml1 = entry2 & !0xFFF;
-        let pml1_hhdm = unsafe{&mut*(pml1 as *mut [usize;512]).byte_offset(hhdm as isize)};
-        pml1_hhdm[(vaddr >> 12) & 0x1FF] = paddr | flags;
-        return true;
+        let mut base = entry.base;
+        let end = base + entry.len;
+        while base < end {
+            unsafe{Freelist::insert(base.try_into().unwrap())};
+            base += 4096;
+        }
     }
 }

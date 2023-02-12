@@ -1,4 +1,4 @@
-#![feature(pointer_byte_offsets)]
+#![feature(pointer_byte_offsets,strict_provenance)]
 #![no_std]
 #![no_main]
 
@@ -34,7 +34,7 @@ pub extern "C" fn _start() -> ! {
     println!("memory ok");
     unsafe{gdt::init()};
     println!("gdt ok");
-    interrupts::init();
+    unsafe{interrupts::init();}
     println!("interrupts ok");
     thread::Thread::new(0, 0); // Our rsp and cr3 should not be 0, so
     unsafe{thread::task_switch();} // we switch tasks to set the right values there.

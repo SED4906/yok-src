@@ -1,4 +1,3 @@
-use crate::mm::Freelist;
 use crate::{println,print};
 #[repr(C)]
 pub struct InterruptGate {
@@ -81,36 +80,34 @@ extern {
     fn enable_interrupts(idtr: *mut InterruptTablePtr);
 }
 
-pub fn init() {
-    unsafe{
-        IDT = Some(Freelist::alloc().expect("no memory for interrupt table").cast());
-        // This sets the first entries in the IDT. Some entries are written twice here.
-        if let Some(idt) = IDT {
-            for entry in 0..=9 {
-                (*idt)[entry] = InterruptGate::new(interrupt_stub_no_err as usize, 0x28, 0, 0x8E);
-            }
-            (*idt)[8] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
-            for entry in 10..=14 {
-                (*idt)[entry] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
-            }
-            for entry in 15..=31 {
-                (*idt)[entry] = InterruptGate::new(interrupt_stub_no_err as usize, 0x28, 0, 0x8E);
-            }
-            (*idt)[17] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
-            (*idt)[21] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
-            (*idt)[29] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
-            (*idt)[30] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
-            for entry in 32..=39 {
-                (*idt)[entry] = InterruptGate::new(interrupt_stub_picm as usize, 0x28, 0, 0x8E);
-            }
-            (*idt)[33] = InterruptGate::new(interrupt_keyb as usize, 0x28, 0, 0x8E);
-            for entry in 40..=47 {
-                (*idt)[entry] = InterruptGate::new(interrupt_stub_pics as usize, 0x28, 0, 0x8E);
-            }
+pub unsafe fn init() {
+    IDT = Some(crate::mm::Freelist::alloc().expect("out of memory allocating interrupt table") as *mut [InterruptGate;256]);
+    // This sets the first entries in the IDT. Some entries are written twice here.
+    if let Some(idt) = IDT {
+        for entry in 0..=9 {
+            (*idt)[entry] = InterruptGate::new(interrupt_stub_no_err as usize, 0x28, 0, 0x8E);
         }
-        pic_remap();
-        pic_unmask_devices();
-        IDTR = InterruptTablePtr::new(48, IDT.unwrap());
-        enable_interrupts(&mut IDTR);
-    };
+        (*idt)[8] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
+        for entry in 10..=14 {
+            (*idt)[entry] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
+        }
+        for entry in 15..=31 {
+            (*idt)[entry] = InterruptGate::new(interrupt_stub_no_err as usize, 0x28, 0, 0x8E);
+        }
+        (*idt)[17] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
+        (*idt)[21] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
+        (*idt)[29] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
+        (*idt)[30] = InterruptGate::new(interrupt_stub_err as usize, 0x28, 0, 0x8E);
+        for entry in 32..=39 {
+            (*idt)[entry] = InterruptGate::new(interrupt_stub_picm as usize, 0x28, 0, 0x8E);
+        }
+        (*idt)[33] = InterruptGate::new(interrupt_keyb as usize, 0x28, 0, 0x8E);
+        for entry in 40..=47 {
+            (*idt)[entry] = InterruptGate::new(interrupt_stub_pics as usize, 0x28, 0, 0x8E);
+        }
+    }
+    pic_remap();
+    pic_unmask_devices();
+    IDTR = InterruptTablePtr::new(48, IDT.unwrap());
+    enable_interrupts(&mut IDTR);
 }

@@ -30,22 +30,18 @@ fn get_current_thread() -> &'static mut Thread {
 
 impl Thread {
     pub fn new(stack: usize, pagemap: usize) {
-        let page = Freelist::alloc();
-        if let Some(ptr) = page {
-            let thread: &mut Thread = unsafe{&mut *ptr.cast()};
-            thread.registers = [0,0,0,0,0,0,stack,0,0,0,0,0,0,0,0,0];
-            thread.pagemap = pagemap;
-            thread.active = true;
-            if let Some(threads) = unsafe{THREADS} {
-                thread.next = unsafe{(*threads).next};
-                thread.prev = threads;
-            } else {
-                thread.next = ptr.cast();
-                thread.prev = ptr.cast();
-                unsafe {THREADS = Some(thread)};
-            }
+        let ptr = unsafe{crate::mm::Freelist::alloc().expect("out of memory allocating thread") as *mut Thread};
+        let thread: &mut Thread = unsafe{&mut *ptr.cast()};
+        thread.registers = [0,0,0,0,0,0,stack,0,0,0,0,0,0,0,0,0];
+        thread.pagemap = pagemap;
+        thread.active = true;
+        if let Some(threads) = unsafe{THREADS} {
+            thread.next = unsafe{(*threads).next};
+            thread.prev = threads;
         } else {
-            panic!("Couldn't allocate memory for thread!");
+            thread.next = ptr.cast();
+            thread.prev = ptr.cast();
+            unsafe {THREADS = Some(thread)};
         }
     }
 
